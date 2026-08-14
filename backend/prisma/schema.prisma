@@ -8,9 +8,13 @@ datasource db {
   provider = "postgresql"
 }
 
-enum GroupRole {
-  OWNER
-  MEMBER
+enum SettlementStatus {
+  PENDING
+  PAID
+}
+
+enum PaymentMethod {
+  BANK_ACCOUNT
 }
 
 model User {
@@ -21,89 +25,96 @@ model User {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
 
-  createdGroups       Group[]              @relation("GroupCreator")
-  memberships         GroupMember[]
-  paidExpenses        Expense[]            @relation("ExpensePayer")
-  expenseParticipants ExpenseParticipant[]
-  settlementsFrom     Settlement[]         @relation("SettlementFrom")
-  settlementsTo       Settlement[]         @relation("SettlementTo")
+  bills Bill[] @relation("BillOwner")
 }
 
-model Group {
-  id          String   @id @default(cuid())
-  name        String
-  createdById String
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+model Bill {
+  id        String   @id @default(cuid())
+  ownerId   String
+  name      String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  createdBy   User          @relation("GroupCreator", fields: [createdById], references: [id])
-  members     GroupMember[]
-  expenses    Expense[]
-  settlements Settlement[]
+  owner         User                @relation("BillOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  participants  BillParticipant[]
+  expenses      Expense[]
+  settlements   Settlement[]
 
-  @@index([createdById])
+  @@index([ownerId])
 }
 
-model GroupMember {
-  id       String    @id @default(cuid())
-  groupId  String
-  userId   String
-  role     GroupRole @default(MEMBER)
-  joinedAt DateTime  @default(now())
+model BillParticipant {
+  id        String   @id @default(cuid())
+  billId    String
+  name      String
+  createdAt DateTime @default(now())
 
-  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bill          Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
+  expensesPaid  Expense[]            @relation("ExpensePayer")
+  shares        ExpenseParticipant[]
+  paymentInfo   PaymentInfo?
 
-  @@unique([groupId, userId])
-  @@index([userId])
+  @@index([billId])
 }
 
 model Expense {
-  id           String   @id @default(cuid())
-  groupId      String
-  paidById     String
-  description  String
-  amountSatang Int
-  category     String
-  spentAt      DateTime
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  billId                String
+  paidByParticipantId   String
+  description           String
+  amountSatang          Int
+  category              String
+  spentAt               DateTime
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
-  group        Group                @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  paidBy       User                 @relation("ExpensePayer", fields: [paidById], references: [id])
-  participants ExpenseParticipant[]
+  bill          Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
+  paidBy        BillParticipant      @relation("ExpensePayer", fields: [paidByParticipantId], references: [id])
+  participants  ExpenseParticipant[]
 
-  @@index([groupId])
-  @@index([paidById])
+  @@index([billId])
+  @@index([paidByParticipantId])
   @@index([spentAt])
 }
 
 model ExpenseParticipant {
   id                String @id @default(cuid())
   expenseId         String
-  userId            String
+  participantId     String
   shareAmountSatang Int
 
-  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Cascade)
-  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expense       Expense         @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  participant   BillParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
-  @@unique([expenseId, userId])
-  @@index([userId])
+  @@unique([expenseId, participantId])
+  @@index([participantId])
+}
+
+model PaymentInfo {
+  id            String        @id @default(cuid())
+  participantId String        @unique
+  method        PaymentMethod @default(BANK_ACCOUNT)
+  bankName      String?
+  accountName   String?
+  accountNumber String?
+
+  participant BillParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 }
 
 model Settlement {
-  id           String   @id @default(cuid())
-  groupId      String
-  fromUserId   String
-  toUserId     String
-  amountSatang Int
-  settledAt    DateTime @default(now())
+  id               String           @id @default(cuid())
+  billId           String
+  fromParticipantId String
+  toParticipantId   String
+  amountSatang     Int
+  status            SettlementStatus @default(PENDING)
+  shareToken        String           @unique
+  createdAt         DateTime         @default(now())
+  paidAt            DateTime?
 
-  group    Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
-  fromUser User  @relation("SettlementFrom", fields: [fromUserId], references: [id])
-  toUser   User  @relation("SettlementTo", fields: [toUserId], references: [id])
+  bill Bill @relation(fields: [billId], references: [id], onDelete: Cascade)
 
-  @@index([groupId])
-  @@index([fromUserId])
-  @@index([toUserId])
+  @@index([billId])
+  @@index([fromParticipantId])
+  @@index([toParticipantId])
 }
