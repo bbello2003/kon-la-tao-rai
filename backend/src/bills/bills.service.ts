@@ -1,8 +1,10 @@
 import {
+  BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
+
 import { PrismaService } from '../prisma/prisma.service';
 import { AddParticipantDto } from './dto/add-participant.dto';
 import { CreateBillDto } from './dto/create-bill.dto';
@@ -11,6 +13,10 @@ import { CreateExpenseDto } from './dto/create-expense.dto';
 @Injectable()
 export class BillsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  // --------------------------------------------------
+  // Create Bill
+  // --------------------------------------------------
 
   async create(userId: string, dto: CreateBillDto) {
     const owner = await this.prisma.user.findUnique({
@@ -27,28 +33,40 @@ export class BillsService {
       data: {
         name: dto.name,
         ownerId: userId,
+
+        // Bill owner is automatically a participant
         participants: {
           create: {
             name: owner.name,
           },
         },
       },
+
       include: {
         participants: true,
       },
     });
   }
 
+  // --------------------------------------------------
+  // Get Bills owned by current user
+  // --------------------------------------------------
+
   async findAll(userId: string) {
     return this.prisma.bill.findMany({
       where: {
         ownerId: userId,
       },
+
       orderBy: {
         createdAt: 'desc',
       },
     });
   }
+
+  // --------------------------------------------------
+  // Get one Bill
+  // --------------------------------------------------
 
   async findOne(userId: string, billId: string) {
     const bill = await this.prisma.bill.findFirst({
@@ -64,6 +82,10 @@ export class BillsService {
 
     return bill;
   }
+
+  // --------------------------------------------------
+  // Add Participant
+  // --------------------------------------------------
 
   async addParticipant(userId: string, billId: string, dto: AddParticipantDto) {
     const bill = await this.prisma.bill.findFirst({
@@ -85,6 +107,10 @@ export class BillsService {
     });
   }
 
+  // --------------------------------------------------
+  // Get Participants
+  // --------------------------------------------------
+
   async findParticipants(userId: string, billId: string) {
     const bill = await this.prisma.bill.findFirst({
       where: {
@@ -101,18 +127,25 @@ export class BillsService {
       where: {
         billId,
       },
+
       orderBy: {
         createdAt: 'asc',
       },
     });
   }
 
+  // --------------------------------------------------
+  // Create Expense
+  // --------------------------------------------------
+
   async createExpense(userId: string, billId: string, dto: CreateExpenseDto) {
+    // 1. Check that the current user owns this Bill
     const bill = await this.prisma.bill.findFirst({
       where: {
         id: billId,
         ownerId: userId,
       },
+
       include: {
         participants: true,
       },
@@ -122,10 +155,12 @@ export class BillsService {
       throw new NotFoundException('Bill not found');
     }
 
+    // 2. Bill must have at least one participant
     if (bill.participants.length === 0) {
       throw new BadRequestException('Bill must have at least one participant');
     }
 
+    // 3. Check that the payer belongs to this Bill
     const payer = bill.participants.find(
       (participant) => participant.id === dto.paidByParticipantId,
     );
@@ -134,6 +169,40 @@ export class BillsService {
       throw new BadRequestException('Payer is not a participant of this bill');
     }
 
+    // 4. Check that at least one participant was selected
+    if (dto.participantIds.length === 0) {
+      throw new BadRequestException('At least one participant is required');
+    }
+
+    // 5. Remove duplicate participant IDs
+    const uniqueParticipantIds = [...new Set(dto.participantIds)];
+
+    // 6. Find selected participants from this Bill only
+    const selectedParticipants = bill.participants.filter((participant) =>
+      uniqueParticipantIds.includes(participant.id),
+    );
+
+    // 7. Make sure every participant ID belongs to this Bill
+    if (selectedParticipants.length !== uniqueParticipantIds.length) {
+      throw new BadRequestException(
+        'One or more participants do not belong to this bill',
+      );
+    }
+
+    // 8. Create the Expense
+    //
+    // Important:
+    // We ONLY store which participants are involved.
+    // We do NOT store shareAmountSatang.
+    //
+    // The amount per person will be calculated later:
+    //
+    // expense amount / participant count
+    //
+    // Example:
+    // 20,000 / 3 = 6,666.666...
+    //
+    // The UI can display 6,666.67 for everyone.
     return this.prisma.expense.create({
       data: {
         billId,
@@ -144,13 +213,15 @@ export class BillsService {
         spentAt: new Date(),
 
         participants: {
-          create: bill.participants.map((participant) => ({
-            participantId: participant.id,
+          create: uniqueParticipantIds.map((participantId) => ({
+            participantId,
           })),
         },
       },
+
       include: {
         paidBy: true,
+
         participants: {
           include: {
             participant: true,
@@ -159,6 +230,10 @@ export class BillsService {
       },
     });
   }
+
+  // --------------------------------------------------
+  // Get Expenses
+  // --------------------------------------------------
 
   async findExpenses(userId: string, billId: string) {
     const bill = await this.prisma.bill.findFirst({
@@ -176,14 +251,17 @@ export class BillsService {
       where: {
         billId,
       },
+
       include: {
         paidBy: true,
+
         participants: {
           include: {
             participant: true,
           },
         },
       },
+
       orderBy: {
         spentAt: 'desc',
       },

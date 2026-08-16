@@ -1,7 +1,8 @@
 import {
+  ArrayMinSize,
+  IsArray,
   IsInt,
   IsString,
-  IsUUID,
   MaxLength,
   Min,
   MinLength,
@@ -25,4 +26,9 @@ export class CreateExpenseDto {
   @IsString()
   @MinLength(1)
   paidByParticipantId!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  participantIds!: string[];
 }
