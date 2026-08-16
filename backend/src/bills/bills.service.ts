@@ -14,10 +14,7 @@ import { CreateExpenseDto } from './dto/create-expense.dto';
 export class BillsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  // --------------------------------------------------
   // Create Bill
-  // --------------------------------------------------
-
   async create(userId: string, dto: CreateBillDto) {
     const owner = await this.prisma.user.findUnique({
       where: {
@@ -48,10 +45,7 @@ export class BillsService {
     });
   }
 
-  // --------------------------------------------------
   // Get Bills owned by current user
-  // --------------------------------------------------
-
   async findAll(userId: string) {
     return this.prisma.bill.findMany({
       where: {
@@ -64,10 +58,7 @@ export class BillsService {
     });
   }
 
-  // --------------------------------------------------
   // Get one Bill
-  // --------------------------------------------------
-
   async findOne(userId: string, billId: string) {
     const bill = await this.prisma.bill.findFirst({
       where: {
@@ -83,10 +74,7 @@ export class BillsService {
     return bill;
   }
 
-  // --------------------------------------------------
   // Add Participant
-  // --------------------------------------------------
-
   async addParticipant(userId: string, billId: string, dto: AddParticipantDto) {
     const bill = await this.prisma.bill.findFirst({
       where: {
@@ -107,10 +95,7 @@ export class BillsService {
     });
   }
 
-  // --------------------------------------------------
   // Get Participants
-  // --------------------------------------------------
-
   async findParticipants(userId: string, billId: string) {
     const bill = await this.prisma.bill.findFirst({
       where: {
@@ -134,10 +119,7 @@ export class BillsService {
     });
   }
 
-  // --------------------------------------------------
   // Create Expense
-  // --------------------------------------------------
-
   async createExpense(userId: string, billId: string, dto: CreateExpenseDto) {
     // 1. Check that the current user owns this Bill
     const bill = await this.prisma.bill.findFirst({
@@ -190,19 +172,6 @@ export class BillsService {
     }
 
     // 8. Create the Expense
-    //
-    // Important:
-    // We ONLY store which participants are involved.
-    // We do NOT store shareAmountSatang.
-    //
-    // The amount per person will be calculated later:
-    //
-    // expense amount / participant count
-    //
-    // Example:
-    // 20,000 / 3 = 6,666.666...
-    //
-    // The UI can display 6,666.67 for everyone.
     return this.prisma.expense.create({
       data: {
         billId,
@@ -231,10 +200,7 @@ export class BillsService {
     });
   }
 
-  // --------------------------------------------------
   // Get Expenses
-  // --------------------------------------------------
-
   async findExpenses(userId: string, billId: string) {
     const bill = await this.prisma.bill.findFirst({
       where: {
