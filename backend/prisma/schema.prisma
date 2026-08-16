@@ -78,13 +78,12 @@ model Expense {
 }
 
 model ExpenseParticipant {
-  id                String @id @default(cuid())
-  expenseId         String
-  participantId     String
-  shareAmountSatang Int
+  id            String @id @default(cuid())
+  expenseId     String
+  participantId String
 
-  expense       Expense         @relation(fields: [expenseId], references: [id], onDelete: Cascade)
-  participant   BillParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
+  expense     Expense         @relation(fields: [expenseId], references: [id], onDelete: Cascade)
+  participant BillParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)
 
   @@unique([expenseId, participantId])
   @@index([participantId])
