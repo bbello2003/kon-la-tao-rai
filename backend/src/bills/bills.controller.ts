@@ -105,4 +105,12 @@ export class BillsController {
   ) {
     return this.billsService.getPaymentInfo(request.user.userId, billId);
   }
+
+  @Post(':id/share-links')
+  createShareLinks(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+  ) {
+    return this.billsService.createShareLinks(request.user.userId, billId);
+  }
 }

@@ -7,6 +7,7 @@ import {
 
 import { PrismaService } from '../prisma/prisma.service';
 import { Decimal } from 'decimal.js';
+import { randomBytes } from 'crypto';
 
 import { AddParticipantDto } from './dto/add-participant.dto';
 import { CreateBillDto } from './dto/create-bill.dto';
@@ -534,5 +535,88 @@ export class BillsService {
         participant: true,
       },
     });
+  }
+
+  async createShareLinks(userId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+      include: {
+        participants: {
+          include: {
+            paymentInfo: true,
+          },
+        },
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    const summary = await this.getSummary(userId, billId);
+
+    if (summary.transactions.length === 0) {
+      throw new BadRequestException('There are no transactions to pay');
+    }
+
+    // Every recipient needs payment information.
+    for (const transaction of summary.transactions) {
+      const paymentInfo = bill.participants.find(
+        (participant) => participant.id === transaction.toParticipantId,
+      )?.paymentInfo;
+
+      if (!paymentInfo) {
+        throw new BadRequestException(
+          `Payment information is missing for ${transaction.to}`,
+        );
+      }
+    }
+
+    // Remove old pending links.
+    // Paid settlements are kept.
+    await this.prisma.settlement.deleteMany({
+      where: {
+        billId,
+        status: 'PENDING',
+      },
+    });
+
+    const settlements: Array<{
+      id: string;
+      fromParticipantId: string;
+      toParticipantId: string;
+      amountSatang: number;
+      shareToken: string;
+    }> = [];
+
+    for (const transaction of summary.transactions) {
+      const shareToken = randomBytes(32).toString('hex');
+
+      const settlement = await this.prisma.settlement.create({
+        data: {
+          billId,
+          fromParticipantId: transaction.fromParticipantId,
+          toParticipantId: transaction.toParticipantId,
+          amountSatang: transaction.amountSatang,
+          shareToken,
+          status: 'PENDING',
+        },
+      });
+
+      settlements.push(settlement);
+    }
+
+    return settlements.map((settlement) => ({
+      settlementId: settlement.id,
+      fromParticipantId: settlement.fromParticipantId,
+      toParticipantId: settlement.toParticipantId,
+      amountSatang: settlement.amountSatang,
+      amountBaht: (settlement.amountSatang / 100).toFixed(2),
+      shareToken: settlement.shareToken,
+      sharePath: `/pay/${settlement.shareToken}`,
+    }));
   }
 }
