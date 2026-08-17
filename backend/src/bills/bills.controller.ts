@@ -15,6 +15,7 @@ import { CreateBillDto } from './dto/create-bill.dto';
 import { BillsService } from './bills.service';
 import { AddParticipantDto } from './dto/add-participant.dto';
 import { CreateExpenseDto } from './dto/create-expense.dto';
+import { CreatePaymentInfoDto } from './dto/create-payment-info.dto';
 
 @Controller('bills')
 @UseGuards(JwtAuthGuard)
@@ -82,5 +83,26 @@ export class BillsController {
     @Param('id') billId: string,
   ) {
     return this.billsService.getSummary(request.user.userId, billId);
+  }
+
+  @Post(':id/payment-info')
+  createPaymentInfo(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+    @Body() dto: CreatePaymentInfoDto,
+  ) {
+    return this.billsService.createPaymentInfo(
+      request.user.userId,
+      billId,
+      dto,
+    );
+  }
+
+  @Get(':id/payment-info')
+  getPaymentInfo(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+  ) {
+    return this.billsService.getPaymentInfo(request.user.userId, billId);
   }
 }

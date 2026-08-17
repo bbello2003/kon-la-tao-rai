@@ -14,6 +14,7 @@ enum SettlementStatus {
 }
 
 enum PaymentMethod {
+  PROMPTPAY
   BANK_ACCOUNT
 }
 
@@ -35,10 +36,10 @@ model Bill {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  owner         User                @relation("BillOwner", fields: [ownerId], references: [id], onDelete: Cascade)
-  participants  BillParticipant[]
-  expenses      Expense[]
-  settlements   Settlement[]
+  owner        User              @relation("BillOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  participants BillParticipant[]
+  expenses     Expense[]
+  settlements  Settlement[]
 
   @@index([ownerId])
 }
@@ -49,28 +50,28 @@ model BillParticipant {
   name      String
   createdAt DateTime @default(now())
 
-  bill          Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
-  expensesPaid  Expense[]            @relation("ExpensePayer")
-  shares        ExpenseParticipant[]
-  paymentInfo   PaymentInfo?
+  bill         Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
+  expensesPaid Expense[]            @relation("ExpensePayer")
+  shares       ExpenseParticipant[]
+  paymentInfo  PaymentInfo?
 
   @@index([billId])
 }
 
 model Expense {
-  id                    String   @id @default(cuid())
-  billId                String
-  paidByParticipantId   String
-  description           String
-  amountSatang          Int
-  category              String
-  spentAt               DateTime
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                  String   @id @default(cuid())
+  billId              String
+  paidByParticipantId String
+  description         String
+  amountSatang        Int
+  category            String
+  spentAt             DateTime
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
 
-  bill          Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
-  paidBy        BillParticipant      @relation("ExpensePayer", fields: [paidByParticipantId], references: [id])
-  participants  ExpenseParticipant[]
+  bill         Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
+  paidBy       BillParticipant      @relation("ExpensePayer", fields: [paidByParticipantId], references: [id])
+  participants ExpenseParticipant[]
 
   @@index([billId])
   @@index([paidByParticipantId])
@@ -92,7 +93,9 @@ model ExpenseParticipant {
 model PaymentInfo {
   id            String        @id @default(cuid())
   participantId String        @unique
-  method        PaymentMethod @default(BANK_ACCOUNT)
+  method        PaymentMethod
+
+  promptPayId   String?
   bankName      String?
   accountName   String?
   accountNumber String?
@@ -101,11 +104,11 @@ model PaymentInfo {
 }
 
 model Settlement {
-  id               String           @id @default(cuid())
-  billId           String
+  id                String           @id @default(cuid())
+  billId            String
   fromParticipantId String
   toParticipantId   String
-  amountSatang     Int
+  amountSatang      Int
   status            SettlementStatus @default(PENDING)
   shareToken        String           @unique
   createdAt         DateTime         @default(now())

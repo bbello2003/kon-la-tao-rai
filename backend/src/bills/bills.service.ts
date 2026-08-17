@@ -6,10 +6,12 @@ import {
 } from '@nestjs/common';
 
 import { PrismaService } from '../prisma/prisma.service';
+import { Decimal } from 'decimal.js';
+
 import { AddParticipantDto } from './dto/add-participant.dto';
 import { CreateBillDto } from './dto/create-bill.dto';
 import { CreateExpenseDto } from './dto/create-expense.dto';
-import { Decimal } from 'decimal.js';
+import { CreatePaymentInfoDto } from './dto/create-payment-info.dto';
 
 @Injectable()
 export class BillsService {
@@ -430,5 +432,107 @@ export class BillsService {
         amountBaht: new Decimal(transaction.amountSatang).div(100).toFixed(2),
       })),
     };
+  }
+
+  async createPaymentInfo(
+    userId: string,
+    billId: string,
+    dto: CreatePaymentInfoDto,
+  ) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    const participant = await this.prisma.billParticipant.findFirst({
+      where: {
+        id: dto.participantId,
+        billId,
+      },
+    });
+
+    if (!participant) {
+      throw new BadRequestException('Participant does not belong to this bill');
+    }
+
+    if (dto.method === 'PROMPTPAY') {
+      if (!dto.promptPayId) {
+        throw new BadRequestException('PromptPay ID is required');
+      }
+
+      return this.prisma.paymentInfo.upsert({
+        where: {
+          participantId: participant.id,
+        },
+        create: {
+          participantId: participant.id,
+          method: 'PROMPTPAY',
+          promptPayId: dto.promptPayId,
+        },
+        update: {
+          method: 'PROMPTPAY',
+          promptPayId: dto.promptPayId,
+          bankName: null,
+          accountName: null,
+          accountNumber: null,
+        },
+      });
+    }
+
+    if (!dto.bankName || !dto.accountName || !dto.accountNumber) {
+      throw new BadRequestException(
+        'Bank name, account name and account number are required',
+      );
+    }
+
+    return this.prisma.paymentInfo.upsert({
+      where: {
+        participantId: participant.id,
+      },
+      create: {
+        participantId: participant.id,
+        method: 'BANK_ACCOUNT',
+        bankName: dto.bankName,
+        accountName: dto.accountName,
+        accountNumber: dto.accountNumber,
+      },
+      update: {
+        method: 'BANK_ACCOUNT',
+        promptPayId: null,
+        bankName: dto.bankName,
+        accountName: dto.accountName,
+        accountNumber: dto.accountNumber,
+      },
+    });
+  }
+
+  async getPaymentInfo(userId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    return this.prisma.paymentInfo.findMany({
+      where: {
+        participant: {
+          billId,
+        },
+      },
+      include: {
+        participant: true,
+      },
+    });
   }
 }
