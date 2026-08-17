@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AddParticipantDto } from './dto/add-participant.dto';
 import { CreateBillDto } from './dto/create-bill.dto';
 import { CreateExpenseDto } from './dto/create-expense.dto';
+import { Decimal } from 'decimal.js';
 
 @Injectable()
 export class BillsService {
@@ -232,5 +233,202 @@ export class BillsService {
         spentAt: 'desc',
       },
     });
+  }
+
+  async getSummary(userId: string, billId: string) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+      include: {
+        participants: true,
+        expenses: {
+          include: {
+            paidBy: true,
+            participants: {
+              include: {
+                participant: true,
+              },
+            },
+          },
+        },
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    // ----------------------------------------
+    // 1. Create balance for every participant
+    // ----------------------------------------
+
+    const balances = new Map<string, Decimal>();
+
+    for (const participant of bill.participants) {
+      balances.set(participant.id, new Decimal(0));
+    }
+
+    // ----------------------------------------
+    // 2. Calculate net balance from every expense
+    //
+    // Positive = should receive money
+    // Negative = owes money
+    // ----------------------------------------
+
+    for (const expense of bill.expenses) {
+      const participantCount = expense.participants.length;
+
+      if (participantCount === 0) {
+        continue;
+      }
+
+      const share = new Decimal(expense.amountSatang).div(participantCount);
+
+      // Person who paid gets credit
+      const payerBalance =
+        balances.get(expense.paidByParticipantId) ?? new Decimal(0);
+
+      balances.set(
+        expense.paidByParticipantId,
+        payerBalance.plus(expense.amountSatang),
+      );
+
+      // Every participant gets a debit
+      for (const expenseParticipant of expense.participants) {
+        const participantBalance =
+          balances.get(expenseParticipant.participantId) ?? new Decimal(0);
+
+        balances.set(
+          expenseParticipant.participantId,
+          participantBalance.minus(share),
+        );
+      }
+    }
+
+    // ----------------------------------------
+    // 3. Round each final balance to 1 satang
+    // ----------------------------------------
+
+    const roundedBalances = [...balances.entries()].map(
+      ([participantId, balance]) => ({
+        participantId,
+        balance: balance.toDecimalPlaces(0),
+      }),
+    );
+
+    // ----------------------------------------
+    // 4. Split people into debtors and creditors
+    // ----------------------------------------
+
+    const debtors = roundedBalances
+      .filter(({ balance }) => balance.isNegative())
+      .map(({ participantId, balance }) => ({
+        participantId,
+        amountSatang: balance.abs().toNumber(),
+      }))
+      .sort((a, b) => b.amountSatang - a.amountSatang);
+
+    const creditors = roundedBalances
+      .filter(({ balance }) => balance.isPositive())
+      .map(({ participantId, balance }) => ({
+        participantId,
+        amountSatang: balance.toNumber(),
+      }))
+      .sort((a, b) => b.amountSatang - a.amountSatang);
+
+    // ----------------------------------------
+    // 5. Fix rounding difference
+    // ----------------------------------------
+
+    const totalDebt = debtors.reduce(
+      (sum, debtor) => sum + debtor.amountSatang,
+      0,
+    );
+
+    const totalCredit = creditors.reduce(
+      (sum, creditor) => sum + creditor.amountSatang,
+      0,
+    );
+
+    const roundingDifference = totalCredit - totalDebt;
+
+    if (roundingDifference !== 0 && creditors.length > 0) {
+      creditors[0].amountSatang -= roundingDifference;
+    }
+
+    // ----------------------------------------
+    // 6. Simplify transactions
+    // ----------------------------------------
+
+    const transactions: {
+      fromParticipantId: string;
+      toParticipantId: string;
+      amountSatang: number;
+    }[] = [];
+
+    let debtorIndex = 0;
+    let creditorIndex = 0;
+
+    while (debtorIndex < debtors.length && creditorIndex < creditors.length) {
+      const debtor = debtors[debtorIndex];
+      const creditor = creditors[creditorIndex];
+
+      const amount = Math.min(debtor.amountSatang, creditor.amountSatang);
+
+      if (amount > 0) {
+        transactions.push({
+          fromParticipantId: debtor.participantId,
+          toParticipantId: creditor.participantId,
+          amountSatang: amount,
+        });
+      }
+
+      debtor.amountSatang -= amount;
+      creditor.amountSatang -= amount;
+
+      if (debtor.amountSatang === 0) {
+        debtorIndex++;
+      }
+
+      if (creditor.amountSatang === 0) {
+        creditorIndex++;
+      }
+    }
+
+    // ----------------------------------------
+    // 7. Add participant names
+    // ----------------------------------------
+
+    const participantMap = new Map(
+      bill.participants.map((participant) => [
+        participant.id,
+        participant.name,
+      ]),
+    );
+
+    return {
+      bill: {
+        id: bill.id,
+        name: bill.name,
+      },
+
+      balances: roundedBalances.map(({ participantId, balance }) => ({
+        participantId,
+        name: participantMap.get(participantId),
+        amountSatang: balance.toNumber(),
+        amountBaht: balance.div(100).toFixed(2),
+      })),
+
+      transactions: transactions.map((transaction) => ({
+        fromParticipantId: transaction.fromParticipantId,
+        from: participantMap.get(transaction.fromParticipantId),
+        toParticipantId: transaction.toParticipantId,
+        to: participantMap.get(transaction.toParticipantId),
+        amountSatang: transaction.amountSatang,
+        amountBaht: new Decimal(transaction.amountSatang).div(100).toFixed(2),
+      })),
+    };
   }
 }

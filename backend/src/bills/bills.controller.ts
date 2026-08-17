@@ -75,4 +75,12 @@ export class BillsController {
   ) {
     return this.billsService.findExpenses(request.user.userId, billId);
   }
+
+  @Get(':id/summary')
+  getSummary(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+  ) {
+    return this.billsService.getSummary(request.user.userId, billId);
+  }
 }
