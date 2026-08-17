@@ -1,29 +1,23 @@
-import {
-  Controller,
-  Get,
-  Param,
-  Post,
-} from '@nestjs/common';
+import { Controller, Get, Param, Post } from '@nestjs/common';
 
 import { PaymentsService } from './payments.service';
 
 @Controller('pay')
 export class PaymentsController {
-  constructor(
-    private readonly paymentsService: PaymentsService,
-  ) {}
+  constructor(private readonly paymentsService: PaymentsService) {}
 
   @Get(':token')
-  getPaymentPage(
-    @Param('token') token: string,
-  ) {
+  getPaymentPage(@Param('token') token: string) {
     return this.paymentsService.getPaymentPage(token);
   }
 
   @Post(':token/mark-paid')
-  markPaid(
-    @Param('token') token: string,
-  ) {
+  markPaid(@Param('token') token: string) {
     return this.paymentsService.markPaid(token);
+  }
+
+  @Get(':token/qr')
+  getQrCode(@Param('token') token: string) {
+    return this.paymentsService.getQrCode(token);
   }
 }

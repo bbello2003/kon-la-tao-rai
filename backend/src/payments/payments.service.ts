@@ -1,9 +1,12 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 
+import generatePayload from 'promptpay-qr';
+import QRCode from 'qrcode';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
@@ -26,32 +29,26 @@ export class PaymentsService {
     });
 
     if (!settlement) {
-      throw new NotFoundException(
-        'Payment link not found',
-      );
+      throw new NotFoundException('Payment link not found');
     }
 
-    const payer =
-      await this.prisma.billParticipant.findUnique({
-        where: {
-          id: settlement.fromParticipantId,
-        },
-      });
+    const payer = await this.prisma.billParticipant.findUnique({
+      where: {
+        id: settlement.fromParticipantId,
+      },
+    });
 
-    const recipient =
-      await this.prisma.billParticipant.findUnique({
-        where: {
-          id: settlement.toParticipantId,
-        },
-        include: {
-          paymentInfo: true,
-        },
-      });
+    const recipient = await this.prisma.billParticipant.findUnique({
+      where: {
+        id: settlement.toParticipantId,
+      },
+      include: {
+        paymentInfo: true,
+      },
+    });
 
     if (!payer || !recipient) {
-      throw new NotFoundException(
-        'Payment information not found',
-      );
+      throw new NotFoundException('Payment information not found');
     }
 
     return {
@@ -69,9 +66,7 @@ export class PaymentsService {
         },
 
         amountSatang: settlement.amountSatang,
-        amountBaht: (
-          settlement.amountSatang / 100
-        ).toFixed(2),
+        amountBaht: (settlement.amountSatang / 100).toFixed(2),
 
         status: settlement.status,
         paidAt: settlement.paidAt,
@@ -80,14 +75,10 @@ export class PaymentsService {
       paymentInfo: recipient.paymentInfo
         ? {
             method: recipient.paymentInfo.method,
-            promptPayId:
-              recipient.paymentInfo.promptPayId,
-            bankName:
-              recipient.paymentInfo.bankName,
-            accountName:
-              recipient.paymentInfo.accountName,
-            accountNumber:
-              recipient.paymentInfo.accountNumber,
+            promptPayId: recipient.paymentInfo.promptPayId,
+            bankName: recipient.paymentInfo.bankName,
+            accountName: recipient.paymentInfo.accountName,
+            accountNumber: recipient.paymentInfo.accountNumber,
           }
         : null,
     };
@@ -101,9 +92,7 @@ export class PaymentsService {
     });
 
     if (!settlement) {
-      throw new NotFoundException(
-        'Payment link not found',
-      );
+      throw new NotFoundException('Payment link not found');
     }
 
     if (settlement.status === 'PAID') {
@@ -121,5 +110,58 @@ export class PaymentsService {
         paidAt: new Date(),
       },
     });
+  }
+
+  async getQrCode(shareToken: string) {
+    const settlement = await this.prisma.settlement.findUnique({
+      where: {
+        shareToken,
+      },
+    });
+
+    if (!settlement) {
+      throw new NotFoundException('Payment link not found');
+    }
+
+    const recipient = await this.prisma.billParticipant.findUnique({
+      where: {
+        id: settlement.toParticipantId,
+      },
+      include: {
+        paymentInfo: true,
+      },
+    });
+
+    if (!recipient) {
+      throw new NotFoundException('Payment recipient not found');
+    }
+
+    if (!recipient.paymentInfo) {
+      throw new NotFoundException('Payment information not found');
+    }
+
+    if (
+      recipient.paymentInfo.method !== 'PROMPTPAY' ||
+      !recipient.paymentInfo.promptPayId
+    ) {
+      throw new BadRequestException(
+        'PromptPay payment method is not configured',
+      );
+    }
+
+    const amount = settlement.amountSatang / 100;
+
+    const payload = generatePayload(recipient.paymentInfo.promptPayId, {
+      amount,
+    });
+
+    const qrDataUrl = await QRCode.toDataURL(payload);
+
+    return {
+      amountSatang: settlement.amountSatang,
+      amountBaht: amount.toFixed(2),
+      promptPayId: recipient.paymentInfo.promptPayId,
+      qrCode: qrDataUrl,
+    };
   }
 }
