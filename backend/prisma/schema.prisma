@@ -18,6 +18,16 @@ enum PaymentMethod {
   BANK_ACCOUNT
 }
 
+enum ExpenseSplitMode {
+  EQUAL
+  CUSTOM
+}
+
+enum FeeSplitMode {
+  EQUAL
+  PROPORTIONAL
+}
+
 model User {
   id           String   @id @default(cuid())
   email        String   @unique
@@ -69,6 +79,17 @@ model Expense {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  // How the main expense is split
+  splitMode ExpenseSplitMode @default(EQUAL)
+
+  // Service Charge
+  serviceChargePercent Decimal      @default(0) @db.Decimal(5, 2)
+  serviceChargeMode    FeeSplitMode @default(EQUAL)
+
+  // VAT
+  vatPercent Decimal      @default(0) @db.Decimal(5, 2)
+  vatMode    FeeSplitMode @default(EQUAL)
+
   bill         Bill                 @relation(fields: [billId], references: [id], onDelete: Cascade)
   paidBy       BillParticipant      @relation("ExpensePayer", fields: [paidByParticipantId], references: [id])
   participants ExpenseParticipant[]
@@ -82,6 +103,7 @@ model ExpenseParticipant {
   id            String @id @default(cuid())
   expenseId     String
   participantId String
+  amountSatang Int
 
   expense     Expense         @relation(fields: [expenseId], references: [id], onDelete: Cascade)
   participant BillParticipant @relation(fields: [participantId], references: [id], onDelete: Cascade)

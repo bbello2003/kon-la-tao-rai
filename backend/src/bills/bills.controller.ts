@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
+  Patch,
   Post,
   Req,
   UseGuards,
@@ -58,6 +60,34 @@ export class BillsController {
     @Param('id') billId: string,
   ) {
     return this.billsService.findParticipants(request.user.userId, billId);
+  }
+
+  @Patch(':id/participants/:participantId')
+  updateParticipant(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+    @Param('participantId') participantId: string,
+    @Body() body: { name: string },
+  ) {
+    return this.billsService.updateParticipant(
+      request.user.userId,
+      billId,
+      participantId,
+      body,
+    );
+  }
+
+  @Delete(':id/participants/:participantId')
+  removeParticipant(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+    @Param('participantId') participantId: string,
+  ) {
+    return this.billsService.removeParticipant(
+      request.user.userId,
+      billId,
+      participantId,
+    );
   }
 
   @Post(':id/expenses')

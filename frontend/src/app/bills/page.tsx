@@ -115,7 +115,7 @@ export default function BillsPage() {
         {/* Header */}
         <header className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold">คนละเท่าไหร่</h1>
+            <h1 className="text-3xl font-bold text-black">คนละเท่าไหร่</h1>
 
             <p className="mt-1 text-gray-500">บิลของฉัน</p>
           </div>
@@ -131,7 +131,7 @@ export default function BillsPage() {
 
         {/* Create bill */}
         <section className="mt-8 rounded-2xl border bg-white p-6 shadow-sm">
-          <h2 className="text-lg font-semibold">สร้างบิลใหม่</h2>
+          <h2 className="text-lg font-semibold text-black">สร้างบิลใหม่</h2>
 
           <p className="mt-1 text-sm text-gray-500">
             เช่น บิลญี่ปุ่น, ทริปเชียงใหม่, กินข้าวกับเพื่อน
@@ -144,7 +144,7 @@ export default function BillsPage() {
               onChange={(event) => setName(event.target.value)}
               placeholder="ชื่อบิล"
               maxLength={100}
-              className="flex-1 rounded-lg border px-4 py-3 outline-none focus:border-black"
+              className="flex-1 rounded-lg border px-4 py-3 text-black outline-none placeholder:text-gray-500 focus:border-black"
             />
 
             <button
@@ -167,7 +167,7 @@ export default function BillsPage() {
         {/* Bills */}
         <section className="mt-8">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-semibold">บิลของคุณ</h2>
+            <h2 className="text-xl font-semibold text-black">บิลของคุณ</h2>
 
             <span className="text-sm text-gray-500">{bills.length} บิล</span>
           </div>
@@ -189,14 +189,14 @@ export default function BillsPage() {
                   onClick={() => router.push(`/bills/${bill.id}`)}
                   className="rounded-2xl border bg-white p-5 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-md"
                 >
-                  <h3 className="text-lg font-semibold">{bill.name}</h3>
+                  <h3 className="text-lg font-semibold text-black">{bill.name}</h3>
 
                   <p className="mt-2 text-sm text-gray-500">
                     สร้างเมื่อ{" "}
                     {new Date(bill.createdAt).toLocaleDateString("th-TH")}
                   </p>
 
-                  <p className="mt-4 text-sm font-medium">ดูรายละเอียด →</p>
+                  <p className="mt-4 text-sm font-medium text-black">ดูรายละเอียด →</p>
                 </button>
               ))}
             </div>

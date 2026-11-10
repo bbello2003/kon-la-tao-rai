@@ -123,6 +123,138 @@ export class BillsService {
     });
   }
 
+  async updateParticipant(
+    userId: string,
+    billId: string,
+    participantId: string,
+    dto: { name: string },
+  ) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    const participant = await this.prisma.billParticipant.findFirst({
+      where: {
+        id: participantId,
+        billId,
+      },
+    });
+
+    if (!participant) {
+      throw new NotFoundException('Participant not found');
+    }
+
+    const trimmedName = dto.name?.trim();
+
+    if (!trimmedName) {
+      throw new BadRequestException('Participant name is required');
+    }
+
+    return this.prisma.billParticipant.update({
+      where: {
+        id: participantId,
+      },
+      data: {
+        name: trimmedName,
+      },
+    });
+  }
+
+  async removeParticipant(userId: string, billId: string, participantId: string) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+      include: {
+        participants: true,
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    const participant = bill.participants.find((item) => item.id === participantId);
+
+    if (!participant) {
+      throw new NotFoundException('Participant not found');
+    }
+
+    const relatedExpenses = await this.prisma.expense.findMany({
+      where: {
+        billId,
+        OR: [
+          { paidByParticipantId: participantId },
+          { participants: { some: { participantId } } },
+        ],
+      },
+      include: {
+        participants: true,
+      },
+    });
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.paymentInfo.deleteMany({
+        where: {
+          participantId,
+        },
+      });
+
+      await tx.settlement.deleteMany({
+        where: {
+          billId,
+          OR: [
+            { fromParticipantId: participantId },
+            { toParticipantId: participantId },
+          ],
+        },
+      });
+
+      for (const expense of relatedExpenses) {
+        await tx.expenseParticipant.deleteMany({
+          where: {
+            expenseId: expense.id,
+            participantId,
+          },
+        });
+
+        const remainingShares = await tx.expenseParticipant.findMany({
+          where: {
+            expenseId: expense.id,
+          },
+        });
+
+        const remainingCount = remainingShares?.length ?? 0;
+
+        if (
+          expense.paidByParticipantId === participantId ||
+          remainingCount === 0
+        ) {
+          await tx.expense.delete({
+            where: { id: expense.id },
+          });
+          continue;
+        }
+      }
+
+      await tx.billParticipant.delete({
+        where: {
+          id: participantId,
+        },
+      });
+    });
+
+    return { success: true };
+  }
+
   // Create Expense
   async createExpense(userId: string, billId: string, dto: CreateExpenseDto) {
     // 1. Check that the current user owns this Bill
@@ -131,7 +263,6 @@ export class BillsService {
         id: billId,
         ownerId: userId,
       },
-
       include: {
         participants: true,
       },
@@ -156,7 +287,7 @@ export class BillsService {
     }
 
     // 4. Check that at least one participant was selected
-    if (dto.participantIds.length === 0) {
+    if (!dto.participantIds || dto.participantIds.length === 0) {
       throw new BadRequestException('At least one participant is required');
     }
 
@@ -175,19 +306,143 @@ export class BillsService {
       );
     }
 
-    // 8. Create the Expense
+    // 8. Normalize split mode
+    const splitMode = dto.splitMode ?? 'EQUAL';
+
+    // 9. Calculate base amount for each participant
+    const participantAmounts = new Map<string, number>();
+
+    if (splitMode === 'EQUAL') {
+      // Divide equally and distribute any remaining satang
+      // to the first participants.
+      const baseShare = Math.floor(
+        dto.amountSatang / selectedParticipants.length,
+      );
+
+      let remainder =
+        dto.amountSatang - baseShare * selectedParticipants.length;
+
+      for (const participant of selectedParticipants) {
+        const extra = remainder > 0 ? 1 : 0;
+
+        participantAmounts.set(participant.id, baseShare + extra);
+
+        if (remainder > 0) {
+          remainder--;
+        }
+      }
+    } else {
+      // CUSTOM
+      const customAmounts = dto.participantAmounts ?? {};
+
+      let assignedAmount = 0;
+      const unspecifiedParticipantIds: string[] = [];
+
+      for (const participant of selectedParticipants) {
+        const value = customAmounts[participant.id];
+
+        // null / undefined = calculate later from remaining amount
+        if (value === null || value === undefined) {
+          unspecifiedParticipantIds.push(participant.id);
+          continue;
+        }
+
+        // Custom amount must be an integer
+        if (!Number.isInteger(value)) {
+          throw new BadRequestException(
+            `Amount for ${participant.name} must be an integer number of satang`,
+          );
+        }
+
+        if (value < 0) {
+          throw new BadRequestException(
+            `Amount for ${participant.name} cannot be negative`,
+          );
+        }
+
+        assignedAmount += value;
+
+        if (assignedAmount > dto.amountSatang) {
+          throw new BadRequestException(
+            'Custom participant amounts exceed the total expense amount',
+          );
+        }
+
+        participantAmounts.set(participant.id, value);
+      }
+
+      const remainingAmount = dto.amountSatang - assignedAmount;
+
+      // Everyone has a custom amount.
+      if (unspecifiedParticipantIds.length === 0) {
+        if (remainingAmount !== 0) {
+          throw new BadRequestException(
+            'Custom participant amounts must equal the total expense amount',
+          );
+        }
+      } else {
+        // Divide the remaining amount equally among
+        // participants without a custom amount.
+        const baseShare = Math.floor(
+          remainingAmount / unspecifiedParticipantIds.length,
+        );
+
+        let remainder =
+          remainingAmount - baseShare * unspecifiedParticipantIds.length;
+
+        for (const participantId of unspecifiedParticipantIds) {
+          const extra = remainder > 0 ? 1 : 0;
+
+          participantAmounts.set(participantId, baseShare + extra);
+
+          if (remainder > 0) {
+            remainder--;
+          }
+        }
+      }
+    }
+
+    // 10. Make sure every selected participant received an amount
+    const totalAssigned = selectedParticipants.reduce(
+      (sum, participant) => sum + (participantAmounts.get(participant.id) ?? 0),
+      0,
+    );
+
+    if (totalAssigned !== dto.amountSatang) {
+      throw new BadRequestException(
+        'Participant amounts do not match the total expense amount',
+      );
+    }
+
+    // 11. Normalize fee settings
+    const serviceChargePercent = dto.serviceChargePercent ?? 0;
+    const serviceChargeMode = dto.serviceChargeMode ?? 'EQUAL';
+
+    const vatPercent = dto.vatPercent ?? 0;
+    const vatMode = dto.vatMode ?? 'EQUAL';
+
+    // 12. Create Expense
     return this.prisma.expense.create({
       data: {
         billId,
         paidByParticipantId: dto.paidByParticipantId,
         description: dto.description,
         amountSatang: dto.amountSatang,
-        category: dto.category,
+        category: dto.category ?? '',
         spentAt: new Date(),
 
+        splitMode,
+
+        serviceChargePercent,
+        serviceChargeMode,
+
+        vatPercent,
+        vatMode,
+
         participants: {
-          create: uniqueParticipantIds.map((participantId) => ({
-            participantId,
+          create: selectedParticipants.map((participant) => ({
+            participantId: participant.id,
+            amountSatang: participantAmounts.get(participant.id) ?? 0,
           })),
         },
       },
@@ -263,9 +518,11 @@ export class BillsService {
       throw new NotFoundException('Bill not found');
     }
 
-    // ----------------------------------------
+    // --------------------------------------------------
     // 1. Create balance for every participant
-    // ----------------------------------------
+    // Positive = should receive money
+    // Negative = owes money
+    // --------------------------------------------------
 
     const balances = new Map<string, Decimal>();
 
@@ -273,46 +530,223 @@ export class BillsService {
       balances.set(participant.id, new Decimal(0));
     }
 
-    // ----------------------------------------
-    // 2. Calculate net balance from every expense
-    //
-    // Positive = should receive money
-    // Negative = owes money
-    // ----------------------------------------
+    // --------------------------------------------------
+    // Helper:
+    // Distribute an amount among participants
+    // --------------------------------------------------
+
+    function distributeEqual(
+      amountSatang: number,
+      participantIds: string[],
+    ): Map<string, number> {
+      const result = new Map<string, number>();
+
+      if (participantIds.length === 0 || amountSatang <= 0) {
+        return result;
+      }
+
+      const baseShare = Math.floor(amountSatang / participantIds.length);
+
+      let remainder = amountSatang - baseShare * participantIds.length;
+
+      for (const participantId of participantIds) {
+        const extra = remainder > 0 ? 1 : 0;
+
+        result.set(participantId, baseShare + extra);
+
+        if (remainder > 0) {
+          remainder--;
+        }
+      }
+
+      return result;
+    }
+
+    // --------------------------------------------------
+    // 2. Calculate each expense
+    // --------------------------------------------------
 
     for (const expense of bill.expenses) {
-      const participantCount = expense.participants.length;
+      const expenseParticipants = expense.participants;
 
-      if (participantCount === 0) {
+      if (expenseParticipants.length === 0) {
         continue;
       }
 
-      const share = new Decimal(expense.amountSatang).div(participantCount);
-
-      // Person who paid gets credit
-      const payerBalance =
-        balances.get(expense.paidByParticipantId) ?? new Decimal(0);
-
-      balances.set(
-        expense.paidByParticipantId,
-        payerBalance.plus(expense.amountSatang),
+      const participantIds = expenseParticipants.map(
+        (item) => item.participantId,
       );
 
-      // Every participant gets a debit
-      for (const expenseParticipant of expense.participants) {
-        const participantBalance =
-          balances.get(expenseParticipant.participantId) ?? new Decimal(0);
+      // ----------------------------------------------
+      // Base expense amount for each participant
+      // ----------------------------------------------
 
-        balances.set(
+      const baseAmounts = new Map<string, number>();
+
+      for (const expenseParticipant of expenseParticipants) {
+        baseAmounts.set(
           expenseParticipant.participantId,
-          participantBalance.minus(share),
+          expenseParticipant.amountSatang,
         );
+      }
+
+      // Make sure base amounts add up to the expense amount.
+      const baseAmountTotal = [...baseAmounts.values()].reduce(
+        (sum, amount) => sum + amount,
+        0,
+      );
+
+      if (baseAmountTotal !== expense.amountSatang) {
+        throw new BadRequestException(
+          `Expense ${expense.id} has invalid participant amounts`,
+        );
+      }
+
+      // ----------------------------------------------
+      // Service Charge
+      // ----------------------------------------------
+
+      let serviceChargeTotal = 0;
+
+      if (expense.serviceChargePercent && expense.serviceChargePercent.gt(0)) {
+        serviceChargeTotal = new Decimal(expense.amountSatang)
+          .mul(expense.serviceChargePercent)
+          .div(100)
+          .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+          .toNumber();
+      }
+
+      let serviceChargeAmounts = new Map<string, number>();
+
+      if (serviceChargeTotal > 0) {
+        if (expense.serviceChargeMode === 'EQUAL') {
+          serviceChargeAmounts = distributeEqual(
+            serviceChargeTotal,
+            participantIds,
+          );
+        } else {
+          // PROPORTIONAL
+          const totalBase = expense.amountSatang;
+
+          let distributed = 0;
+
+          participantIds.forEach((participantId, index) => {
+            const baseAmount = baseAmounts.get(participantId) ?? 0;
+
+            if (index === participantIds.length - 1) {
+              const remaining = serviceChargeTotal - distributed;
+
+              serviceChargeAmounts.set(participantId, remaining);
+
+              return;
+            }
+
+            const amount = new Decimal(serviceChargeTotal)
+              .mul(baseAmount)
+              .div(totalBase)
+              .toDecimalPlaces(0, Decimal.ROUND_FLOOR)
+              .toNumber();
+
+            serviceChargeAmounts.set(participantId, amount);
+
+            distributed += amount;
+          });
+        }
+      }
+
+      // ----------------------------------------------
+      // VAT
+      //
+      // VAT is calculated from:
+      // Base Expense + Service Charge
+      // ----------------------------------------------
+
+      const vatBase = expense.amountSatang + serviceChargeTotal;
+
+      let vatTotal = 0;
+
+      if (expense.vatPercent && expense.vatPercent.gt(0)) {
+        vatTotal = new Decimal(vatBase)
+          .mul(expense.vatPercent)
+          .div(100)
+          .toDecimalPlaces(0, Decimal.ROUND_HALF_UP)
+          .toNumber();
+      }
+
+      let vatAmounts = new Map<string, number>();
+
+      if (vatTotal > 0) {
+        if (expense.vatMode === 'EQUAL') {
+          vatAmounts = distributeEqual(vatTotal, participantIds);
+        } else {
+          // PROPORTIONAL
+          //
+          // Proportion is based on the participant's
+          // base expense amount.
+
+          const totalBase = expense.amountSatang;
+
+          let distributed = 0;
+
+          participantIds.forEach((participantId, index) => {
+            const baseAmount = baseAmounts.get(participantId) ?? 0;
+
+            if (index === participantIds.length - 1) {
+              const remaining = vatTotal - distributed;
+
+              vatAmounts.set(participantId, remaining);
+
+              return;
+            }
+
+            const amount = new Decimal(vatTotal)
+              .mul(baseAmount)
+              .div(totalBase)
+              .toDecimalPlaces(0, Decimal.ROUND_FLOOR)
+              .toNumber();
+
+            vatAmounts.set(participantId, amount);
+
+            distributed += amount;
+          });
+        }
+      }
+
+      // ----------------------------------------------
+      // Calculate final amount per participant
+      // ----------------------------------------------
+
+      for (const participantId of participantIds) {
+        const baseAmount = baseAmounts.get(participantId) ?? 0;
+
+        const serviceCharge = serviceChargeAmounts.get(participantId) ?? 0;
+
+        const vat = vatAmounts.get(participantId) ?? 0;
+
+        const finalAmount = baseAmount + serviceCharge + vat;
+
+        // Person who paid gets credit for the amount paid.
+        if (participantId === expense.paidByParticipantId) {
+          const currentBalance = balances.get(participantId) ?? new Decimal(0);
+
+          balances.set(
+            participantId,
+            currentBalance.plus(
+              expense.amountSatang + serviceChargeTotal + vatTotal,
+            ),
+          );
+        }
+
+        // Person responsible for the expense gets debit.
+        const currentBalance = balances.get(participantId) ?? new Decimal(0);
+
+        balances.set(participantId, currentBalance.minus(finalAmount));
       }
     }
 
-    // ----------------------------------------
-    // 3. Round each final balance to 1 satang
-    // ----------------------------------------
+    // --------------------------------------------------
+    // 3. Round balances to satang
+    // --------------------------------------------------
 
     const roundedBalances = [...balances.entries()].map(
       ([participantId, balance]) => ({
@@ -321,9 +755,9 @@ export class BillsService {
       }),
     );
 
-    // ----------------------------------------
-    // 4. Split people into debtors and creditors
-    // ----------------------------------------
+    // --------------------------------------------------
+    // 4. Debtors / Creditors
+    // --------------------------------------------------
 
     const debtors = roundedBalances
       .filter(({ balance }) => balance.isNegative())
@@ -341,9 +775,9 @@ export class BillsService {
       }))
       .sort((a, b) => b.amountSatang - a.amountSatang);
 
-    // ----------------------------------------
+    // --------------------------------------------------
     // 5. Fix rounding difference
-    // ----------------------------------------
+    // --------------------------------------------------
 
     const totalDebt = debtors.reduce(
       (sum, debtor) => sum + debtor.amountSatang,
@@ -361,9 +795,9 @@ export class BillsService {
       creditors[0].amountSatang -= roundingDifference;
     }
 
-    // ----------------------------------------
+    // --------------------------------------------------
     // 6. Simplify transactions
-    // ----------------------------------------
+    // --------------------------------------------------
 
     const transactions: {
       fromParticipantId: string;
@@ -400,9 +834,9 @@ export class BillsService {
       }
     }
 
-    // ----------------------------------------
-    // 7. Add participant names
-    // ----------------------------------------
+    // --------------------------------------------------
+    // 7. Participant name map
+    // --------------------------------------------------
 
     const participantMap = new Map(
       bill.participants.map((participant) => [
@@ -410,6 +844,10 @@ export class BillsService {
         participant.name,
       ]),
     );
+
+    // --------------------------------------------------
+    // 8. Return summary
+    // --------------------------------------------------
 
     return {
       bill: {
@@ -426,10 +864,15 @@ export class BillsService {
 
       transactions: transactions.map((transaction) => ({
         fromParticipantId: transaction.fromParticipantId,
+
         from: participantMap.get(transaction.fromParticipantId),
+
         toParticipantId: transaction.toParticipantId,
+
         to: participantMap.get(transaction.toParticipantId),
+
         amountSatang: transaction.amountSatang,
+
         amountBaht: new Decimal(transaction.amountSatang).div(100).toFixed(2),
       })),
     };
