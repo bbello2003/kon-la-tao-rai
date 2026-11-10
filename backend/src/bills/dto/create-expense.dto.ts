@@ -12,16 +12,10 @@ import {
   Min,
   MinLength,
 } from 'class-validator';
-
-enum ExpenseSplitMode {
-  EQUAL = 'EQUAL',
-  CUSTOM = 'CUSTOM',
-}
-
-enum FeeSplitMode {
-  EQUAL = 'EQUAL',
-  PROPORTIONAL = 'PROPORTIONAL',
-}
+import {
+  ExpenseSplitMode,
+  FeeSplitMode,
+} from '../../generated/prisma/client';
 
 export class CreateExpenseDto {
   @IsString()

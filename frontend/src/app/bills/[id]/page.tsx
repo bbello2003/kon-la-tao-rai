@@ -499,6 +499,7 @@ export default function BillDetailPage() {
         setExpenses((currentExpenses) =>
           currentExpenses.map((e) => (e.id === editingExpenseId ? newExpense : e)),
         );
+        await loadBillDetail();
         setNotice(`อัพเดตรายการ ${trimmedDescription} เรียบร้อยแล้ว`);
       } else {
         // Create new
@@ -508,6 +509,7 @@ export default function BillDetailPage() {
           body: JSON.stringify(body),
         });
         setExpenses((currentExpenses) => [newExpense, ...currentExpenses]);
+        await loadBillDetail();
         setNotice(`เพิ่มรายการ ${trimmedDescription} เรียบร้อยแล้ว`);
       }
 
@@ -535,7 +537,11 @@ export default function BillDetailPage() {
       if (error instanceof Error) {
         setError(error.message);
       } else {
-        setError("ไม่สามารถเพิ่มค่าใช้จ่ายได้");
+        setError(
+          editingExpenseId
+            ? "ไม่สามารถอัพเดตรายการได้"
+            : "ไม่สามารถเพิ่มค่าใช้จ่ายได้",
+        );
       }
     } finally {
       setCreatingExpense(false);
@@ -625,6 +631,7 @@ export default function BillDetailPage() {
         ),
       );
 
+      await loadBillDetail();
       setNotice(`อัพเดตชื่อ ${trimmedName} เรียบร้อยแล้ว`);
       closeEditParticipant();
     } catch (error) {
@@ -683,8 +690,19 @@ export default function BillDetailPage() {
       });
 
       setExpenses((current) => current.filter((e) => e.id !== expenseId));
-      setNotice("ลบรายการเรียบร้อยแล้ว");
       setDeletingExpenseId(null);
+
+      try {
+        const summary = await api<BillSummary>(`/bills/${params.id}/summary`, {
+          token,
+        });
+        setBillSummary(summary);
+        setNotice("ลบรายการเรียบร้อยแล้ว");
+      } catch (error) {
+        const message =
+          error instanceof Error ? `: ${error.message}` : "";
+        setError(`ลบรายการแล้ว แต่ไม่สามารถโหลดสรุปบิลใหม่ได้${message}`);
+      }
     } catch (error) {
       if (error instanceof Error) {
         setError(error.message);
@@ -716,6 +734,24 @@ export default function BillDetailPage() {
       minimumFractionDigits: 2,
       maximumFractionDigits: 2,
     })}`;
+  }
+
+  function getExpenseBreakdown(expense: Expense) {
+    const serviceChargeSatang = Math.round(
+      (expense.amountSatang * Number(expense.serviceChargePercent)) / 100,
+    );
+    const vatSatang = Math.round(
+      ((expense.amountSatang + serviceChargeSatang) *
+        Number(expense.vatPercent)) /
+        100,
+    );
+
+    return {
+      serviceChargeSatang,
+      vatSatang,
+      totalSatang:
+        expense.amountSatang + serviceChargeSatang + vatSatang,
+    };
   }
 
   if (loading) {
@@ -755,7 +791,7 @@ export default function BillDetailPage() {
   }
 
   const totalExpenses = expenses.reduce(
-    (sum, expense) => sum + expense.amountSatang,
+    (sum, expense) => sum + getExpenseBreakdown(expense).totalSatang,
     0,
   );
 
@@ -1007,6 +1043,14 @@ export default function BillDetailPage() {
                                 <p className="mt-1 text-sm text-slate-500">
                                   จ่ายโดย {expense.paidBy.name}
                                 </p>
+                                {expense.participants.length > 0 && (
+                                  <p className="mt-1 text-sm text-slate-500">
+                                    หารกับ{" "}
+                                    {expense.participants
+                                      .map((item) => item.participant.name)
+                                      .join(", ")}
+                                  </p>
+                                )}
                               </div>
                               <button
                                 type="button"
@@ -1020,9 +1064,24 @@ export default function BillDetailPage() {
                               </button>
                             </div>
                             <div className="mt-3 flex items-center justify-between text-sm text-slate-600">
-                              <span>{formatAmount(expense.amountSatang)}</span>
+                              <span className="font-semibold">
+                                {formatAmount(
+                                  getExpenseBreakdown(expense).totalSatang,
+                                )}
+                              </span>
                               <span className="text-xs text-slate-400">แก้ไข →</span>
                             </div>
+                            {(Number(expense.serviceChargePercent) > 0 ||
+                              Number(expense.vatPercent) > 0) && (
+                              <p className="mt-1 text-xs text-slate-500">
+                                ยอดก่อนค่าธรรมเนียม{" "}
+                                {formatAmount(expense.amountSatang)}
+                                {Number(expense.serviceChargePercent) > 0 &&
+                                  ` + Service charge ${formatAmount(getExpenseBreakdown(expense).serviceChargeSatang)}`}
+                                {Number(expense.vatPercent) > 0 &&
+                                  ` + VAT ${formatAmount(getExpenseBreakdown(expense).vatSatang)}`}
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>

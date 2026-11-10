@@ -13,6 +13,7 @@ import { AddParticipantDto } from './dto/add-participant.dto';
 import { CreateBillDto } from './dto/create-bill.dto';
 import { CreateExpenseDto } from './dto/create-expense.dto';
 import { CreatePaymentInfoDto } from './dto/create-payment-info.dto';
+import { Prisma } from '../generated/prisma/client';
 
 @Injectable()
 export class BillsService {
@@ -211,14 +212,30 @@ export class BillsService {
       await tx.settlement.deleteMany({
         where: {
           billId,
-          OR: [
-            { fromParticipantId: participantId },
-            { toParticipantId: participantId },
-          ],
+          status: 'PENDING',
         },
       });
 
       for (const expense of relatedExpenses) {
+        const remainingShares = expense.participants.filter(
+          (share) => share.participantId !== participantId,
+        );
+        const hasShare = remainingShares.length !== expense.participants.length;
+
+        if (
+          expense.paidByParticipantId === participantId ||
+          remainingShares.length === 0
+        ) {
+          await tx.expense.delete({
+            where: { id: expense.id },
+          });
+          continue;
+        }
+
+        if (!hasShare) {
+          continue;
+        }
+
         await tx.expenseParticipant.deleteMany({
           where: {
             expenseId: expense.id,
@@ -226,22 +243,17 @@ export class BillsService {
           },
         });
 
-        const remainingShares = await tx.expenseParticipant.findMany({
-          where: {
-            expenseId: expense.id,
-          },
-        });
+        const redistributedShares = this.redistributeExpenseAmount(
+          expense.amountSatang,
+          remainingShares,
+          expense.splitMode,
+        );
 
-        const remainingCount = remainingShares?.length ?? 0;
-
-        if (
-          expense.paidByParticipantId === participantId ||
-          remainingCount === 0
-        ) {
-          await tx.expense.delete({
-            where: { id: expense.id },
+        for (const share of redistributedShares) {
+          await tx.expenseParticipant.update({
+            where: { id: share.id },
+            data: { amountSatang: share.amountSatang },
           });
-          continue;
         }
       }
 
@@ -255,8 +267,92 @@ export class BillsService {
     return { success: true };
   }
 
+  private redistributeExpenseAmount(
+    totalAmount: number,
+    shares: {
+      id: string;
+      participantId: string;
+      amountSatang: number;
+    }[],
+    splitMode: 'EQUAL' | 'CUSTOM',
+  ) {
+    if (splitMode === 'EQUAL') {
+      const baseAmount = Math.floor(totalAmount / shares.length);
+      let remainder = totalAmount - baseAmount * shares.length;
+
+      return shares.map((share) => {
+        const amountSatang = baseAmount + (remainder > 0 ? 1 : 0);
+        remainder = Math.max(0, remainder - 1);
+        return { id: share.id, amountSatang };
+      });
+    }
+
+    const totalWeight = shares.reduce(
+      (sum, share) => sum + Math.max(0, share.amountSatang),
+      0,
+    );
+
+    if (totalWeight === 0) {
+      return this.redistributeExpenseAmount(totalAmount, shares, 'EQUAL');
+    }
+
+    const allocations = shares.map((share) => {
+      const exactAmount = new Decimal(totalAmount)
+        .mul(Math.max(0, share.amountSatang))
+        .div(totalWeight);
+      const amountSatang = exactAmount
+        .toDecimalPlaces(0, Decimal.ROUND_FLOOR)
+        .toNumber();
+
+      return {
+        id: share.id,
+        amountSatang,
+        fractionalRemainder: exactAmount.minus(amountSatang),
+      };
+    });
+
+    let remainder =
+      totalAmount -
+      allocations.reduce((sum, share) => sum + share.amountSatang, 0);
+
+    allocations
+      .slice()
+      .sort((left, right) =>
+        right.fractionalRemainder.comparedTo(left.fractionalRemainder),
+      )
+      .forEach((share) => {
+        if (remainder > 0) {
+          const allocation = allocations.find((item) => item.id === share.id);
+          if (allocation) {
+            allocation.amountSatang += 1;
+            remainder -= 1;
+          }
+        }
+      });
+
+    return allocations.map(({ id, amountSatang }) => ({ id, amountSatang }));
+  }
+
   // Create Expense
   async createExpense(userId: string, billId: string, dto: CreateExpenseDto) {
+    return this.saveExpense(userId, billId, dto);
+  }
+
+  async updateExpense(
+    userId: string,
+    billId: string,
+    expenseId: string,
+    dto: CreateExpenseDto,
+  ) {
+    return this.saveExpense(userId, billId, dto, expenseId);
+  }
+
+  private async saveExpense(
+    userId: string,
+    billId: string,
+    dto: CreateExpenseDto,
+    expenseId?: string,
+  ) {
     // 1. Check that the current user owns this Bill
     const bill = await this.prisma.bill.findFirst({
       where: {
@@ -270,6 +366,22 @@ export class BillsService {
 
     if (!bill) {
       throw new NotFoundException('Bill not found');
+    }
+
+    if (expenseId) {
+      const existingExpense = await this.prisma.expense.findFirst({
+        where: {
+          id: expenseId,
+          billId,
+        },
+        select: {
+          id: true,
+        },
+      });
+
+      if (!existingExpense) {
+        throw new NotFoundException('Expense not found');
+      }
     }
 
     // 2. Bill must have at least one participant
@@ -421,41 +533,62 @@ export class BillsService {
     const vatPercent = dto.vatPercent ?? 0;
     const vatMode = dto.vatMode ?? 'EQUAL';
 
-    // 12. Create Expense
-    return this.prisma.expense.create({
-      data: {
-        billId,
-        paidByParticipantId: dto.paidByParticipantId,
-        description: dto.description,
-        amountSatang: dto.amountSatang,
-        category: dto.category ?? '',
-        spentAt: new Date(),
+    const data = {
+      billId,
+      paidByParticipantId: dto.paidByParticipantId,
+      description: dto.description,
+      amountSatang: dto.amountSatang,
+      category: dto.category ?? '',
+      spentAt: new Date(),
+      splitMode,
+      serviceChargePercent,
+      serviceChargeMode,
+      vatPercent,
+      vatMode,
+      participants: {
+        create: selectedParticipants.map((participant) => ({
+          participantId: participant.id,
+          amountSatang: participantAmounts.get(participant.id) ?? 0,
+        })),
+      },
+    } satisfies Prisma.ExpenseUncheckedCreateInput;
 
-        splitMode,
-
-        serviceChargePercent,
-        serviceChargeMode,
-
-        vatPercent,
-        vatMode,
-
-        participants: {
-          create: selectedParticipants.map((participant) => ({
-            participantId: participant.id,
-            amountSatang: participantAmounts.get(participant.id) ?? 0,
-          })),
+    const include = {
+      paidBy: true,
+      participants: {
+        include: {
+          participant: true,
         },
       },
+    } as const;
 
-      include: {
-        paidBy: true,
+    if (!expenseId) {
+      return this.prisma.expense.create({ data, include });
+    }
 
-        participants: {
-          include: {
-            participant: true,
-          },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.settlement.deleteMany({
+        where: {
+          billId,
+          status: 'PENDING',
         },
-      },
+      });
+
+      const updateData = {
+        ...data,
+        participants: {
+          deleteMany: {},
+          create: data.participants.create,
+        },
+      } satisfies Prisma.ExpenseUncheckedUpdateInput;
+
+      return tx.expense.update({
+        where: {
+          id: expenseId,
+        },
+        data: updateData,
+        include,
+      });
     });
   }
 
@@ -491,6 +624,50 @@ export class BillsService {
         spentAt: 'desc',
       },
     });
+  }
+
+  async deleteExpense(userId: string, billId: string, expenseId: string) {
+    const bill = await this.prisma.bill.findFirst({
+      where: {
+        id: billId,
+        ownerId: userId,
+      },
+    });
+
+    if (!bill) {
+      throw new NotFoundException('Bill not found');
+    }
+
+    const expense = await this.prisma.expense.findFirst({
+      where: {
+        id: expenseId,
+        billId,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (!expense) {
+      throw new NotFoundException('Expense not found');
+    }
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.settlement.deleteMany({
+        where: {
+          billId,
+          status: 'PENDING',
+        },
+      });
+
+      await tx.expense.delete({
+        where: {
+          id: expenseId,
+        },
+      });
+    });
+
+    return { success: true };
   }
 
   async getSummary(userId: string, billId: string) {

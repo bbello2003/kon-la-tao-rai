@@ -107,6 +107,34 @@ export class BillsController {
     return this.billsService.findExpenses(request.user.userId, billId);
   }
 
+  @Patch(':id/expenses/:expenseId')
+  updateExpense(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+    @Param('expenseId') expenseId: string,
+    @Body() dto: CreateExpenseDto,
+  ) {
+    return this.billsService.updateExpense(
+      request.user.userId,
+      billId,
+      expenseId,
+      dto,
+    );
+  }
+
+  @Delete(':id/expenses/:expenseId')
+  deleteExpense(
+    @Req() request: Request & { user: AuthUser },
+    @Param('id') billId: string,
+    @Param('expenseId') expenseId: string,
+  ) {
+    return this.billsService.deleteExpense(
+      request.user.userId,
+      billId,
+      expenseId,
+    );
+  }
+
   @Get(':id/summary')
   getSummary(
     @Req() request: Request & { user: AuthUser },
